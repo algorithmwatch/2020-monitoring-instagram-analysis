@@ -2,13 +2,21 @@
 title: "Metadata on the IG monitoring database"
 number_sections: yes
 output:
+  pdf_document:
+    number_sections: true
   md_document:
     variant: gfm
 params:
-  pwd: ""
+  pwd: "hodor"
 ---
 
-Here you'll find a codebook explaining the database structure for the Undressing IG project.
+Here you'll find a codebook explaining the database structure for the "Undressing Instagram" project.
+
+**Story by:** [Judith Duportail](https://twitter.com/judithduportail), [Nicolas Kayser-Bril](https://twitter.com/nicolaskb)
+
+**Data collection:** [Édouard Richard](https://twitter.com/vied12)
+
+**Data analysis:** [Kira Schacht](https://twitter.com/daten_drang)
 
 # Setup
 
@@ -32,7 +40,8 @@ Read database
 
 ```{r}
 # create a connection to the postgres database
-con = dbConnect(dbDriver("PostgreSQL"), dbname= "igdb", host="127.0.0.1", user="postgres", password = params$pwd)
+con = dbConnect(dbDriver("PostgreSQL"), dbname= "igdb", host="127.0.0.1",
+                user="postgres", password = params$pwd)
 
 #list tables in the database
 dbListTables(con)

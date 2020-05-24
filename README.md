@@ -1,5 +1,12 @@
 Here you’ll find a codebook explaining the database structure for the
-Undressing IG project.
+“Undressing Instagram” project.
+
+**Story by:** [Judith Duportail](https://twitter.com/judithduportail),
+[Nicolas Kayser-Bril](https://twitter.com/nicolaskb)
+
+**Data collection:** [Édouard Richard](https://twitter.com/vied12)
+
+**Data analysis:** [Kira Schacht](https://twitter.com/daten_drang)
 
 # Setup
 
@@ -18,22 +25,28 @@ Load packages needed
 library("RPostgreSQL")
 ```
 
+    ## Loading required package: DBI
+
 Read database
 
 ``` r
 # create a connection to the postgres database
-con = dbConnect(dbDriver("PostgreSQL"), dbname= "igdb", host="127.0.0.1", user="postgres", password = params$pwd)
+con = dbConnect(dbDriver("PostgreSQL"), dbname= "igdb", host="127.0.0.1",
+                user="postgres", password = params$pwd)
 
 #list tables in the database
 dbListTables(con)
 ```
 
-    ##  [1] "auth_user_user_permissions"    "data_donors_datadonationerror" "django_migrations"            
-    ##  [4] "django_session"                "auth_permission"               "auth_group"                   
-    ##  [7] "django_content_type"           "auth_user_groups"              "auth_user"                    
-    ## [10] "data_donors_donor"             "data_donors_datadonation"      "data_donors_donor_following"  
-    ## [13] "data_donors_donorfollowing"    "data_donors_encounter"         "django_admin_log"             
-    ## [16] "ig_observer_igpost"            "ig_observer_igimage"           "auth_group_permissions"       
+    ##  [1] "auth_user_user_permissions"    "data_donors_datadonationerror"
+    ##  [3] "django_migrations"             "django_session"               
+    ##  [5] "auth_permission"               "auth_group"                   
+    ##  [7] "django_content_type"           "auth_user_groups"             
+    ##  [9] "auth_user"                     "data_donors_donor"            
+    ## [11] "data_donors_datadonation"      "data_donors_donor_following"  
+    ## [13] "data_donors_donorfollowing"    "data_donors_encounter"        
+    ## [15] "django_admin_log"              "ig_observer_igpost"           
+    ## [17] "ig_observer_igimage"           "auth_group_permissions"       
     ## [19] "ig_observer_iguser"            "ig_observer_gvisionanalyse"
 
 # Codebook
