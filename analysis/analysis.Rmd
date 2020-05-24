@@ -1,0 +1,1404 @@
+---
+title: "Undressing IG: Analysis"
+number_sections: yes
+output:
+  md_document:
+    variant: gfm
+params:
+  working.directory: ""
+  pwd: ""
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+knitr::opts_knit$set(root.dir = params$working.directory)
+library("needs")
+```
+
+# Analysis of data
+
+**Goal:** Test the main hypothesis: Pictures of women perform better if they have less clothing on. This is not true for males.
+
+
+**Tests:**
+
+:white_check_mark: [**Question 1**](#question-1-raciness-share): Is the **share of "racy" pictures higher in the feeds** of the donors, compared with the share of racy pictures in the items posted by the monitored accounts?
+
+:white_check_mark: [**Question 2**](#question-2-label-analysis): Find the **labels most often associated with "raciness" and nudity**. Check if the effect is similar for male and female monitored accounts. 
+
+:white_check_mark: [**Question 3**](#question-3-nudity-share): Is the **share of pictures containing nudity** higher in the feeds of the donors, compared with the share of pictures containing nudity in the items posted by the monitored accounts?
+
+:white_check_mark: [**Question 4**](#question-4-individual-donors): Is the share of pictures containing nudity **higher in the feeds of each individual donor**, compared with the share of pictures containing nudity in the items posted by the monitored accounts they follow?
+
+:white_check_mark: [**Question 5**](#question-5-raciness-audience): Is a post **shown to more donors** that follow the account if it's racy?
+
+:white_check_mark: [**Question 6**](#question-6-few-followed-accounts): Check if **data donors who are following less than 5 accounts in total** have a similar pattern.
+
+:white_check_mark: [**Question 7**](#question-7-nudity-audience): Check if **specific labels** have a higher-than-average chance of being in the feed of donors (e.g. "Bikini", "Undergarment", "Leg", "Beauty"). Check if the effect is similar for male and female monitored accounts.
+
+
+
+
+Things to check:
+
+- Observed bias could be due to specific donors
+- Observed bias could be due to specific monitored users
+- Observed bias could be due to content creators removing rapidly the items that are not racy
+
+# Setup
+
+Follow the steps below in a terminal to load the database from a dump file and save under the name `igdb`.
+
+```
+pg_restore -f backup.sql 05-19_backup
+sudo -i -u postgres
+dropdb igdb
+createdb igdb
+igdb < backup.sql
+```
+
+Load packages needed.
+
+```{r warning=FALSE}
+needs("RPostgreSQL", "tidyverse", "jsonlite","ggbeeswarm")
+```
+
+# Read database
+
+Create variables for the tables from the database needed for this analysis:
+
+```{r warning=FALSE}
+# create a connection to the postgres database
+con = dbConnect(dbDriver("PostgreSQL"), dbname= "igdb", host="127.0.0.1", user="postgres", password = params$pwd)
+
+#list tables in the database
+dbListTables(con)
+
+# Observed accounts each donor follows
+donors_follow = dbReadTable(con, "data_donors_donor_following")
+
+# Log of encounters with posts from observed accounts
+donors_encounter = dbReadTable(con, "data_donors_encounter")
+
+# Log of donation runs
+donors_donation = dbReadTable(con, "data_donors_datadonation")
+
+# List of details for observed IG accounts
+ig_user = dbReadTable(con, "ig_observer_iguser")
+
+# List of posts by observed accounts
+ig_post = dbReadTable(con, "ig_observer_igpost")
+
+# List of images in observed posts
+ig_image = dbReadTable(con, "ig_observer_igimage")
+
+# Result of G Vision analysis
+ig_gvision = dbReadTable(con, "ig_observer_gvisionanalyse")
+```
+
+# Clean data
+
+Extract analysis result from G vision JSON blob and save raciness rating in new column called `racy`.
+
+```{r warning=FALSE}
+ig_gvision = ig_gvision %>%
+  mutate(analyse = sapply(analyse, parse_json),
+         racy = sapply(analyse, function(result) result$safeSearchAnnotation$racy) %>% 
+           factor(., levels = c("VERY_LIKELY", "LIKELY", "POSSIBLE", "UNLIKELY", "VERY_UNLIKELY"), ordered = TRUE) %>% unname)
+
+```
+
+Merge relevant IG user data to post data
+
+1. Sex of IG user (column `sex`)
+
+2. How many donors with at least 1 data donation follow them (column `donor_followers`)
+
+```{r echo=FALSE}
+tmp_donor_followers = donors_follow %>%
+  filter(donor_id %in% donors_donation$donor_id) %>% 
+  group_by(iguser_id) %>% summarize(donor_followers = n())
+                                                                        
+ig_post = ig_post %>%
+  left_join(ig_user %>% select(id, sex), by = c("ig_user_id" = "id")) %>% 
+  left_join(tmp_donor_followers, by = c("ig_user_id" = "iguser_id"))
+rm(tmp_donor_followers)
+```
+
+Merge relevant post data to image dataset
+
+1. Raciness analysis result
+
+2. Sex of IG user
+
+```{r echo=FALSE}
+ig_image = ig_image %>%
+  # join sex to image ID
+  left_join(ig_post %>% select(id,sex), by = c("ig_post_id" = "id")) %>% 
+  # join analysis result to image ID
+  left_join(ig_gvision %>% select(ig_image_id,racy), by = c("id" = "ig_image_id"), suffix = c("_ig_img", "_analysis"))
+```
+
+Get dataset of image labels from G vision analysis.
+
+```
+"ig_image_id" Image ID
+"mid"         Label ID
+"score"       Confidence of label [0.5,1]
+"topicality"  Importance of label for image [0.5,1]
+"description" Label text
+"ig_post_id"  Post ID
+"sex"         Sex of IG user
+"racy"        Raciness of image
+```
+
+```{r}
+ig_image_labels = ig_gvision$analyse %>%
+  map("labelAnnotations") %>% #get subset "labelAnnotations" from analysis
+  set_names(ig_gvision$ig_image_id) %>% #set image IDs as names
+  map(function(x) bind_rows(x)) %>% bind_rows(.id = "ig_image_id") %>% #bind into data frame
+  mutate(ig_image_id = as.integer(ig_image_id)) %>% 
+  #merge with post ID, sex of IG user and raciness rating of post
+  left_join(ig_image %>% select(-image_url), by = c("ig_image_id" = "id")) %>% 
+  #merge with IG post shortcode
+  left_join(ig_post %>% select(id, ig_shortcode), by = c("ig_post_id" = "id"))
+```
+
+
+# Descriptive analysis
+
+## Number of posts
+
+Monitored accounts posted `r nrow(ig_post)` containing `r nrow(ig_image)` images.
+
+The analysis contains posts from users with at least 1 data donor that made at least 1 donation following them.
+
+That adds up to `r ig_post %>% filter(!is.na(donor_followers)) %>% nrow` posts containing `r ig_image %>% filter(ig_post_id %in% ig_post$id[!is.na(ig_post$donor_followers)]) %>% nrow` images.
+
+
+## Number of encounters
+
+```{r echo=FALSE}
+donors_encounter %>% nrow %>% cat("encounters total")
+(donors_encounter$ig_post_id %in% ig_image$ig_post_id) %>% ifelse("contains image", "no image") %>% table
+
+donors_encounter$ig_post_id %>% unique %>% length %>% cat("unique posts encountered")
+(unique(donors_encounter$ig_post_id) %in% ig_image$ig_post_id) %>% ifelse("contains image", "no image") %>% table
+```
+
+Around 4/5 posts were not encountered by any donors.
+
+## Donors and monitored accounts
+
+Number of monitored accounts by sex:
+
+```{r}
+ig_post %>%
+  mutate(donor_followers = ifelse(is.na(donor_followers),"no donor followers", "donor followers")) %>% 
+  group_by(sex, donor_followers) %>%
+  summarise(n = ig_user_id %>% unique %>% length) %>% spread(donor_followers,n) %>%
+  knitr::kable()
+```
+
+Number of donors: `r dbReadTable(con, "data_donors_donor") %>% nrow`
+
+Number of donors with at least 1 donation: `r donors_donation$donor_id %>% unique %>% length`
+
+Number of monitored accounts followed by at least 1 donor with at least 1 donation: `r ig_post$ig_user_id[!is.na(ig_post$donor_followers)] %>% unique %>% length` of `r nrow(ig_user)`
+
+## Donation runs
+
+```{r}
+x = donors_donation %>% mutate(with_encounter = id %in% donors_encounter$data_donation_id)
+ggplot(x, aes(created, factor(donor_id), color = with_encounter)) + geom_point() +
+  ggtitle("Overview of donation runs by donor over time")
+rm(x)
+```
+
+Some donors had more donation runs than others, and some encountered more posts by monitored accounts than others.
+
+# Question 1: Raciness share
+
+## Analysis 1: Share comparison
+
+Is the share of pictures labeled "racy" higher in the feeds of the donors than in the items posted by the monitored accounts?`
+
+**Step 1:** Get share of *created* image posts containing racy pictures (basis: collected posts by monitored accounts who are followed by at least one data donor).
+
+```{r echo=FALSE}
+#for each post: highest level of raciness in images
+tmp_post_raciness = ig_image %>% group_by(sex, ig_post_id) %>% summarise(racy = min(racy)) %>% ungroup()
+
+# take list of posts (ig_post)
+racy_created = ig_post %>% 
+  # join highest raciness level of post
+  left_join(tmp_post_raciness %>% select(-sex), by = c("id" = "ig_post_id")) %>% 
+  # filter out those by accounts not followed by any donors, as well as videos, which have no raciness level
+  filter(!is.na(donor_followers), !is.na(racy)) %>% 
+  # summarize by raciness: calculate number and shares of posts
+  group_by(sex, racy) %>%
+  summarise(n_created = id %>% unique %>% length) %>%
+  mutate(share_created =  n_created/sum(n_created))
+
+racy_created %>% filter(racy %in% c("LIKELY","VERY_LIKELY")) %>%
+  select(sex,racy,share_created) %>% spread(racy, share_created) %>% 
+  knitr::kable(digits = 3)
+```
+
+Posts containing racy pictures in the content posted by monitored accounts: `r racy_created$n_created[racy_created$racy %in% c("LIKELY","VERY_LIKELY")] %>% sum` of `r sum(racy_created$n_created)` posts (`r round(sum(racy_created$n_created[racy_created$racy %in% c("LIKELY","VERY_LIKELY")])/sum(racy_created$n_created)*100,1)` %).
+
+To support our main hypothesis, the shares would need to be higher than this in the encounters logged by data donors.
+
+**Step 2:** Get share of *encountered* image posts containing racy pictures (basis: all image posts from monitored accounts encountered by donors).
+
+`share_post`: Share of unique encountered posts with given raciness rating
+
+`share_encounter`: Share of encounters with given racinedd rating
+
+```{r echo=FALSE}
+# take encounters (data_donors_encounter)
+racy_encountered = donors_encounter %>% 
+# does the post contain a racy image?
+  # join highest raciness level of post and sex of user
+  left_join(tmp_post_raciness, by = c("ig_post_id")) %>% 
+  # filter out videos, which have no analysis result
+  filter(!is.na(racy)) %>% 
+# how likely is that?
+  # summarize by raciness:
+  group_by(sex, racy) %>%
+  #n_post: number of unique posts encountered, n_encounters: number of encounters
+  summarise(n_post = length(unique(ig_post_id)),
+            n_encounters = length(unique(id))) %>%
+  #calculate shares for both
+  mutate(share_post =  n_post/sum(n_post),
+         share_encounters = n_encounters/sum(n_encounters))
+
+racy_encountered %>% filter(racy %in% c("LIKELY","VERY_LIKELY")) %>%
+  select(sex,racy,share_post,share_encounters) %>% knitr::kable(digits = 2)
+```
+
+Encounters with posts containing racy pictures in the feeds of donors: `r racy_encountered$n_encounters[racy_encountered$racy %in% c("LIKELY","VERY_LIKELY")] %>% sum` of `r sum(racy_encountered$n_encounters)` posts (`r round(sum(racy_encountered$n_encounters[racy_encountered$racy %in% c("LIKELY","VERY_LIKELY")])/sum(racy_encountered$n_encounters)*100,1)` %).
+
+How big is the difference?
+
+Difference in share of unique posts, encountered vs. created:
+```{r}
+left_join(racy_created, racy_encountered, by = c("sex","racy")) %>% 
+  mutate(diff_post_share = share_post/share_created) %>% 
+  select(sex,racy,diff_post_share) %>% 
+  spread(sex, diff_post_share) %>% knitr::kable(digits = 2)
+```
+
+Difference in share of unique encounters vs. created posts:
+```{r}
+left_join(racy_created, racy_encountered, by = c("sex","racy")) %>% 
+  mutate(diff_post_share = share_encounters/share_created) %>% 
+  select(sex,racy,diff_post_share) %>% 
+  spread(sex, diff_post_share) %>% knitr::kable(digits = 2)
+```
+
+
+## Analysis 2: Significance test
+
+Is the difference statistically significant?
+
+Test whether the proportion of raciness is significantly higher in encounters by donors than in created posts. [Run two-proportions z-test](http://www.sthda.com/english/wiki/two-proportions-z-test-in-r) for `alpha = 0.05`.
+
+```{r}
+racy_test_table = left_join(racy_created, racy_encountered, by = c("sex","racy")) %>% 
+  mutate(racy = ifelse(racy %in% c("VERY_LIKELY","LIKELY"), "racy", "non-racy")) %>% 
+  group_by(racy) %>% 
+  summarise(n_encounters = sum(n_encounters),n_created = sum(n_created)) %>% 
+  arrange(desc(racy)) %>% 
+  column_to_rownames("racy") %>% 
+  t()
+
+racy_test_table
+
+prop.test(racy_test_table, alternative = "greater")
+```
+
+Run test seperately by gender.
+
+```{r}
+
+racy_test_table_sex = left_join(racy_created, racy_encountered, by = c("sex","racy")) %>% 
+  mutate(racy = ifelse(racy %in% c("VERY_LIKELY","LIKELY"), "racy", "non-racy")) %>% 
+  group_by(sex, racy) %>% 
+  summarise(n_encounters = sum(n_encounters),n_created = sum(n_created)) %>% 
+  arrange(desc(racy)) %>% ungroup
+
+test_f = racy_test_table_sex %>% filter(sex == "F") %>% select(-sex) %>% 
+  column_to_rownames("racy") %>% t() %>%
+  prop.test(alternative = "greater")
+
+test_m = racy_test_table_sex %>% filter(sex == "M") %>% select(-sex) %>% 
+  column_to_rownames("racy") %>% t() %>%
+  prop.test(alternative = "greater")
+```
+For posts by women, the p-value is `r test_f$p.value` < 0.05: The true share of raciness is greater in encounters than in created posts.
+
+For posts by men, the p-value is `r test_m$p.value` < 0.05: The true share of raciness is greater in encounters than in created posts.
+
+
+```{r}
+rm(racy_created, racy_encountered, tmp_post_raciness,
+   racy_test_table, racy_test_table_sex, test_f, test_m)
+```
+
+**Findings:**
+
+> *Counting unique posts:*
+> 
+> For posts by women, there is no big difference between the share of unique racy posts in created ones and in encountered ones.
+> For men, posts with pictures labeled "very likely" racy are encountered more often.
+> 
+> *Counting unique encounters:*
+> 
+> The **share of encounters with racy posts is significantly higher** than the share of racy posts created.
+> 
+> Posts with "very likely" racy images **occur 1.4 times as often in encounters as in created posts**.
+>
+> The effect is observed for both male and female users.
+
+
+
+# Question 2: Label analysis
+
+`Which labels are most often associated with raciness? Check if the effect is similar for male and female monitored accounts.`
+
+
+## Analysis 1: Raciness association
+
+`Which labels are most often associated with raciness?`
+
+G Vision raciness annotation translated to binary variable as follows:
+
+- "VERY_LIKELY","LIKELY" ~ "racy",
+
+- "VERY_UNLIKELY","UNLIKELY" ~ "not_racy",
+
+- "POSSIBLE" ~ NA
+
+
+Indicators of association are:
+
+1. Labels that most often occur in the "very likely" and "likely" raciness ratings (High values of `racy`)
+
+2. Labels that have a higher share in the "very likely" and "likely" raciness ratings than in the "very unlikely" and "unlikely" ratings (High `odds`)
+
+```{r echo=FALSE}
+#label by raciness category
+racy_labels = ig_image_labels %>% group_by(racy, description) %>% 
+  summarise(n = length(unique(ig_image_id))) %>% 
+  spread(racy, n, fill = 0) %>% 
+  transmute(description = description,
+            racy = (VERY_LIKELY+LIKELY),
+            not_racy = (VERY_UNLIKELY+UNLIKELY),
+            share_yes = racy/sum(racy),
+            share_no = not_racy/sum(not_racy),
+            odds = ifelse(share_no>0, share_yes/share_no, NA)) %>%
+  arrange(-odds) %>% select(-share_yes, -share_no)
+```
+
+Top labels more common in pictures tagged as "racy" than in non-racy ones:
+```{r}
+head(racy_labels,10) %>% knitr::kable(digits = 0)
+```
+
+
+## Analysis 2: Raciness association by sex
+
+`Check if the effect is similar for male and female monitored accounts.`
+
+**Step 1:** General effect of sex: Are images by female users more commonly labeled as racy?
+
+```{r echo=FALSE}
+#label by raciness category and sex
+racy_labels_sex = ig_image_labels %>% 
+  #simplify raciness rating into yes and no. possible becomes NA.
+  mutate(racy = case_when(
+    racy %in% c("VERY_LIKELY","LIKELY") ~ "racy",
+    racy %in% c("VERY_UNLIKELY","UNLIKELY") ~ "not_racy",
+    racy == "POSSIBLE" ~ "undecided"
+  )) %>% 
+  #count occurrences per raciness and sex of user
+  group_by(racy, sex) %>%
+  summarise(n = length(unique(ig_image_id))) %>% 
+  spread(racy, n, fill = 0) %>% 
+  mutate(share_yes = racy/(racy + not_racy + undecided))
+
+racy_labels_sex %>% knitr::kable(digits = 2)
+```
+
+Images by female users are more commonly  associated with raciness than images by male users. `r round(racy_labels_sex$share_yes[1]*100)` % of images by women were classified as racy, while only `r round(racy_labels_sex$share_yes[2]*100)` % by men were.
+
+**Step 2:** Images most associated with nudity in posts by female and male users, respectively
+
+```{r echo=FALSE}
+#label by raciness category and sex
+racy_labels_sex = ig_image_labels %>% 
+  #simplify raciness rating into yes and no. possible becomes NA.
+  mutate(racy = case_when(
+    racy %in% c("VERY_LIKELY","LIKELY") ~ "racy",
+    racy %in% c("VERY_UNLIKELY","UNLIKELY") ~ "not_racy",
+    TRUE ~ NA_character_
+  )) %>% 
+  filter(!is.na(racy)) %>% #filter out "possible" raciness rating
+  #count occurrences per label raciness and sex of user
+  group_by(racy, description,sex) %>%
+  summarise(n = length(unique(ig_image_id))) %>% 
+  spread(racy, n, fill = 0) %>% group_by(sex) %>%
+  mutate(share_yes = racy/sum(racy),
+         share_no = not_racy/sum(not_racy),
+         odds = ifelse(share_no>0, share_yes/share_no, NA)) %>% 
+  select(-share_yes, -share_no)
+```
+
+*Labels for male users:*
+
+For men, the labels most associated with racy pictures over non-racy ones are:
+
+```{r, results = "asis"}
+racy_labels_sex %>% filter(sex == "M") %>% arrange(-odds) %>% head(10) %>% knitr::kable(digits = 0)
+```
+
+*Labels for female users:*
+
+For women, the labels most associated with racy pictures over non-racy ones are:
+
+```{r, results = "asis"}
+racy_labels_sex %>% filter(sex == "F") %>% arrange(-odds) %>% head(10) %>% knitr::kable(digits = 0)
+```
+
+```{r}
+rm(racy_labels,racy_labels_sex)
+```
+
+**Findings:**
+
+> Labels describing body parts, underwear or swimwear are most heavily associated with raciness.
+> 
+> Images posted by women are more heavily associated with raciness than those posted by men.
+
+## Analysis 3: Nudity association
+
+For the following analyses, it would be helpful to group labels into categories we're interested in.
+
+Make list of labels tagged in more than 50 images, export as CSV for manual labeling.
+
+```{r}
+#make list of labels tagged in more than 50 images
+tmp_label_analysis = ig_image_labels %>%
+  group_by(description) %>% summarise(n_images = length(unique(ig_image_id))) %>% 
+  filter(n_images > 50) %>% arrange(-n_images)
+#write to csv
+write.csv(tmp_label_analysis, "label_analysis.csv", row.names = F)
+```
+
+
+Manually sort labels by category and whether they indicate nudity.
+
+Read finished dataset from `label_analysis_categories.csv`.
+
+```{r}
+label_analysis = read.csv2("label_analysis_categories.csv", stringsAsFactors = F) %>% mutate(category = factor(category))
+label_analysis$description[label_analysis$nudity] %>% sort
+rm(tmp_label_analysis)
+```
+
+
+## Analysis 4: Nudity association by sex
+
+Which labels that indicate nudity are associated with which gender?
+
+Count how many images by male and female users have each nudity label, select the ones that are assigned to one user gender in more than 90% of images.
+```{r}
+ig_image_labels %>% group_by(description, sex) %>%
+  summarise(n_images = length(unique(ig_image_id))) %>% 
+  left_join(label_analysis %>% select(description, nudity), by = "description") %>% 
+  filter(nudity) %>% select(-nudity) %>% 
+  spread(sex, n_images, fill = 0) %>% 
+  mutate(bias = (`F`/sum(`F`,M,na.rm=T)) %>% ifelse(`F`>=M, .,1-.),
+         bias_gender = ifelse(`F`>=M, "F","M"))  %>% 
+  arrange(-bias)%>% knitr::kable(digits = 2)
+```
+
+Labels indicating nudity that are >= 90% assigned to male or female accounts:
+
+Women: `Brassiere, Lingerie, Undergarment, Waist, Thigh, Swimwear, Bikini, Skin`
+
+Men: `Bodybuilding, Barechested`
+
+We assume that, especially in the larger amount of pictures by female users, there will be some pictures containing both men and women. To be more specific, adjust for some of the labels that aren't clearly gendered.
+
+Final list:
+
+Women: `Brassiere, Lingerie, Undergarment, Bikini`
+
+Men: `Bodybuilder, Barechested`
+
+How large is the sample? Number of posts with any of these labels by user gender:
+```{r}
+nudity_labels = c("Brassiere", "Lingerie", "Undergarment", "Bikini", "Barechested", "Bodybuilder")
+
+ig_image_labels %>% filter(description %in% nudity_labels) %>%
+  group_by(sex) %>% 
+  summarise(n_images = length(unique(ig_image_id))) %>%
+  knitr::kable(digits = 0)
+
+rm(nudity_labels)
+```
+
+# Question 3: Nudity share
+
+`Is the % of pictures containing nudity higher in the feeds of the donors, compared with the % of pictures containing nudity in the items posted by the monitored accounts?`
+
+Run analysis from Q1 again for labels indicating nudity. Use gendered nudity labels compiled in Q2, Analysis 4:
+
+Women: `Brassiere, Lingerie, Undergarment, Bikini`
+
+Men: `Barechested, Bodybuilder`
+
+## Analysis 1: Share comparison
+
+```{r}
+nudity_f = c("Brassiere", "Lingerie", "Undergarment", "Bikini")
+nudity_m = c("Barechested", "Bodybuilder")
+neutral_labels = c("Food", "Landscape")
+
+#for each post: check whether it contains nudity in any of the images
+tmp_post_nudity = ig_image_labels %>%
+  mutate(nudity_f = description %in% nudity_f,
+         nudity_m = description %in% nudity_m,
+         neutral_labels = description %in% neutral_labels) %>% 
+  group_by(ig_post_id) %>%
+  summarise(nudity_f = any(nudity_f, na.rm = T),
+            nudity_m = any(nudity_m, na.rm = T),
+            neutral_labels = any(neutral_labels, na.rm = T)) %>% ungroup
+```
+
+
+**Step 1:** Get share of *created* image posts containing pictures with nudity (basis: collected posts by monitored accounts who are followed by at least one data donor).
+
+```{r echo=FALSE}
+# take list of posts (ig_post)
+nudity_created = ig_post %>% 
+  # join nudity label
+  left_join(tmp_post_nudity, by = c("id" = "ig_post_id")) %>% 
+  # filter out those by accounts not followed by any donors, as well as videos, which have no image analysis
+  filter(!is.na(donor_followers), !is.na(nudity_f)) %>% 
+  select(id, nudity_f,nudity_m,neutral_labels) %>% 
+  gather(nudity_gender, nudity, 2:4) %>% 
+  # summarize by nudity: calculate number and shares of posts
+  group_by(nudity_gender, nudity) %>%
+  summarise(n_created = id %>% unique %>% length) %>%
+  mutate(share_created =  n_created/sum(n_created))
+
+nudity_created %>% select(-n_created) %>% spread(nudity, share_created) %>% 
+  knitr::kable(digits = 2)
+```
+
+
+To support our main hypothesis, the shares would need to be higher than this in the encounters logged by data donors.
+
+**Step 2:** Get share of *encountered* image posts containing nudity (basis: all image posts from monitored accounts encountered by donors).
+
+`share_post`: Share of unique encountered posts with given raciness rating
+
+`share_encounter`: Share of encounters with given racinedd rating
+
+```{r echo=FALSE}
+
+# take encounters (data_donors_encounter)
+nudity_encountered = donors_encounter %>% 
+# does the post contain an image with nudity?
+  # join nudity label
+  left_join(tmp_post_nudity, by = "ig_post_id") %>% 
+  # filter out videos, which have no nudity rating
+  filter(!is.na(nudity_f)) %>% 
+  gather(nudity_gender, nudity, 5:7) %>% 
+# how likely is that?
+  # summarize by nudity: calculate shares
+  group_by(nudity_gender, nudity) %>% 
+  #n_post: number of unique posts encountered, n_encounters: number of encounters
+  summarise(n_post = length(unique(ig_post_id)),
+            n_encounters = length(unique(id))) %>%
+  #calculate shares for both
+  mutate(share_post =  n_post/sum(n_post),
+         share_encounters = n_encounters/sum(n_encounters))
+
+nudity_encountered %>% select(-n_post,-n_encounters) %>% 
+  knitr::kable(digits = 2)
+```
+
+How big is the difference?
+
+```{r}
+x = left_join(nudity_created, nudity_encountered, by = c("nudity_gender","nudity")) %>% 
+  mutate(diff_post_share = share_post/share_created,
+         diff_encounters_share = share_encounters/share_created) %>%
+  filter(nudity) %>% select(nudity_gender,diff_post_share,diff_encounters_share)
+x %>%  knitr::kable(digits = 2)
+
+```
+
+*Counting individual  posts:*
+For posts containing female nudity, there is no big difference between the share of posts in created ones and in encountered ones.
+The share of individual posts containing male nudity is almost twice as high in encountered posts as in created ones.
+
+*Counting individual encounters:*
+
+Posts containing female nudity occur `r round((x$diff_encounters_share[2]-1)*100,1)` % more in encounters than in created posts.
+For men, the share is `r round((x$diff_encounters_share[3]-1)*100,1)` % higher in encounters.
+
+By contrast, the share of posts containing the labels "Food" or "Landscape" was `r round((1/x$diff_encounters_share[3]-1)*100,1)` % lower in encounters.
+
+## Analysis 2: Significance test by gender
+
+Are the differences we found statistically significant?
+
+Test whether the proportion of nudity is significantly higher in encounters by donors than in created posts. [Run two-proportions z-test](http://www.sthda.com/english/wiki/two-proportions-z-test-in-r) for `alpha = 0.05`.
+
+Run test seperately by gender.
+
+```{r}
+nudity_test_table_sex = left_join(nudity_created, nudity_encountered, by = c("nudity_gender","nudity")) %>% 
+  mutate(nudity = ifelse(nudity, "nudity", "no nudity")) %>%
+  select(nudity_gender, nudity, n_encounters, n_created) %>% 
+  arrange(desc(nudity)) %>% ungroup()
+```
+
+Test for female nudity:
+```{r}
+test = nudity_test_table_sex %>%
+  filter(nudity_gender == "nudity_f") %>% select(-nudity_gender) %>% 
+  column_to_rownames("nudity") %>% t() %>%
+  prop.test(alternative = "greater")
+```
+The p-value is < 0.05: The true share of nudity is greater in encounters (`r round(test$estimate[1]*100,1)` %) than in created posts (`r round(test$estimate[2]*100,1)` %).
+
+
+Test for male nudity:
+```{r}
+test = nudity_test_table_sex %>%
+  filter(nudity_gender == "nudity_m") %>% select(-nudity_gender) %>% 
+  column_to_rownames("nudity") %>% t() %>%
+  prop.test(alternative = "greater")
+```
+The p-value is < 0.05: The true share of nudity is greater in encounters (`r round(test$estimate[1]*100,1)` %) than in created posts (`r round(test$estimate[2]*100,1)` %).
+
+**Findings:**
+
+> *Counting individual encounters:*
+> 
+> The **share of posts containing nudity is significantly larger in encounters** than in created posts for both genders.
+> Posts containing female nudity are 1.6 times as likely in encounters as in created posts.
+> For men, the share is 1.4 times higher in encounters.
+
+
+```{r}
+rm(tmp_post_nudity,nudity_created,nudity_encountered,
+   nudity_test_table_sex,nudity_f,nudity_m,test,neutral_labels)
+```
+
+
+# Question 4: Individual donors
+
+How do the shares of raciness/nudity in encounters by individual donors compare to the posts they could potentially have encountered?
+
+For each individual donor, get:
+
+1. Share of racy pictures/pictures containing nudity they could have encountered
+
+2. Share of racy pictures/pictures containing nudity they did encounter
+
+**Step 0:** Preparation. For each post:
+
+ - check whether it contains nudity in any of the images
+
+ - get highest level of raciness in images
+
+```{r}
+nudity_f = c("Brassiere", "Lingerie", "Undergarment", "Bikini")
+nudity_m = c("Barechested", "Bodybuilder")
+
+tmp_post_gvision = ig_image_labels %>%
+  mutate(nudity_f = description %in% nudity_f,
+         nudity_m = description %in% nudity_m) %>% 
+  group_by(ig_post_id) %>%
+  summarise(nudity_f = any(nudity_f, na.rm = T),
+            nudity_m = any(nudity_m, na.rm = T),
+            racy = min(racy)) %>% ungroup
+```
+
+**Step 1:** Share of racy pictures/pictures containing nudity each donor could have encountered
+
+```{r}
+share_created_donor = tmp_post_gvision %>%
+  # join user id
+  left_join(ig_post %>% select(id, ig_user_id), by = c("ig_post_id" = "id")) %>% 
+  # join donor followers
+  left_join(donors_follow %>% select(-id), by = c("ig_user_id" = "iguser_id")) %>% 
+  # filter out posts by users without donor followers
+  filter(!is.na(donor_id)) %>% 
+  # summarize shares by donor id
+  group_by(donor_id) %>%
+  summarise(n_created = ig_post_id %>% unique %>% length,
+            nudity.f_created = sum(nudity_f)/n_created,
+            nudity.m_created = sum(nudity_m)/n_created,
+            racy_created = sum(racy %in% c("LIKELY","VERY_LIKELY"))/n_created)
+```
+
+**Step 2:** Share of encounters with racy pictures/pictures containing nudity by donor
+
+```{r}
+# take list of encounters
+share_encountered_donor = donors_encounter %>% 
+  # join donor id
+  left_join(donors_donation %>% select(id, donor_id), by = c("data_donation_id" = "id")) %>% 
+  # join raciness and nudity level of post
+  left_join(tmp_post_gvision, by = "ig_post_id") %>% 
+  # filter out videos, which have no analysis result
+  filter(!is.na(racy)) %>%
+  # summarize shares by donor id
+  group_by(donor_id) %>%
+  summarise(n_posts_encountered = ig_post_id %>% unique %>% length,
+            n_encounters = n(),
+            nudity.f_encounters = sum(nudity_f)/n_encounters,
+            nudity.m_encounters = sum(nudity_m)/n_encounters,
+            racy_encounters = sum(racy %in% c("LIKELY","VERY_LIKELY"))/n_encounters)
+```
+
+
+**Step 3:** How big is the difference?
+
+Consider all donors with at least 30 encounters. Difference in raciness shares by donor:
+
+```{r}
+#join data frames
+shares_donor = left_join(share_created_donor, share_encountered_donor, by = "donor_id") %>% 
+  arrange(-nudity.f_created) %>% 
+  #calculate differences for all three measures
+  mutate(nudity.f_diff = nudity.f_encounters / nudity.f_created,
+         nudity.m_diff = nudity.m_encounters / nudity.m_created,
+         racy_diff = racy_encounters / racy_created) %>% 
+  #filter out donors with less than 30 encounters
+  filter(n_encounters >= 30) %>% 
+  #sort variables alphabetically
+  select(current_vars() %>% sort())
+
+shares_donor %>%
+  select(donor_id, n_encounters, racy_encounters, racy_created, racy_diff) %>%
+  arrange(donor_id) %>%  knitr::kable(digits = 2)
+```
+
+
+**Step 4:** Plot results
+```{r}
+#prepare data for plotting
+shares_donor_long = shares_donor %>% 
+  mutate(donor_id = factor(donor_id, levels = donor_id %>% rev)) %>% 
+  gather("var", "value", 5:13) %>% 
+  separate(var, into = c("measure", "value_type"), sep= "_") %>% 
+  spread(value_type, value)
+
+shares_annotation = data.frame(
+  x = c(shares_donor$nudity.f_encounters[1],shares_donor$nudity.f_created[1]),
+  y = rep(nrow(shares_donor),2), nudge_x = c(0.01, -0.01), hjust = c(0,1),
+  label = c("encountered","created"), measure = c("nudity.f","nudity.f"))
+```
+
+
+```{r}
+ggplot(shares_donor_long, aes(y = donor_id)) +
+  geom_segment(aes(x = encounters, xend = created, yend = donor_id)) +
+  geom_point(aes(x = created), color = "#8da0cb", size = 2) + 
+  geom_point(aes(x = encounters), color = "#fc8d62", size = 2) + 
+  geom_text(data = shares_annotation,
+            aes(x = x, y = y, label = label, hjust = hjust),
+            size = 2.7, nudge_y = -0.2, vjust = 1) +
+  scale_y_discrete(labels = paste0("#",shares_donor$donor_id, " (",shares_donor$n_encounters, ")") %>% rev()) +
+  facet_wrap(.~measure) +
+  labs(x = "share", y = "donor ID (number of encounters)",
+       title = "Share of created posts vs. encounters per donor") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank())
+```
+
+**Findings:**
+
+>The results differ by donor.
+>
+>Most donors encounter a higher share of raciness in their feeds than could be expected from the content of the monitored users they follow. For nudity, some donors encounter fewer pictures containing nudity from either gender than the share in posts by their monitored accounts.
+>
+>Where there is a high difference between the shares, it's usually in favour of a higher share of nudity or raciness in encounters.
+
+```{r}
+rm(tmp_post_gvision,share_created_donor,share_encountered_donor,
+   shares_donor,shares_donor_long,shares_annotation,nudity_f,nudity_m)
+```
+
+
+
+# Question 5: Raciness audience
+
+`Is a post encountered by a higher share of its potential audience if it contains racy pictures?`
+
+For each post, get:
+
+1. Highest raciness rating of images
+
+2. How many donors could potentially have seen it?
+
+3. How many of those did see it?
+
+```{r echo=FALSE}
+#for each image: highest level of raciness in images
+tmp_image_raciness = ig_image %>% group_by(ig_post_id) %>% summarise(racy = min(racy))
+#for each post: # of donors following the posting account (donor_followers), # of donors that saw the post
+tmp_post_encounters = donors_encounter %>%
+  left_join(donors_donation %>% select(id, donor_id), by = c("data_donation_id"="id")) %>% 
+  group_by(ig_post_id) %>% 
+  summarise(donors_count = length(unique(donor_id)),
+            encounters_count = length(unique(data_donation_id)))
+
+post_encounters_share = ig_post %>%
+  select(id, sex, donor_followers) %>% 
+  #join raciness level and donor encounters
+  left_join(tmp_image_raciness, by = c("id" = "ig_post_id")) %>% 
+  left_join(tmp_post_encounters, by = c("id" = "ig_post_id")) %>% 
+  #replace NA value in counts with 0
+  mutate(donors_count = ifelse(is.na(donors_count), 0, donors_count),
+         encounters_count = ifelse(is.na(encounters_count), 0, encounters_count)) %>% 
+  # filter out videos, which have no analysis result, and posts with no following donors
+  filter(!is.na(racy), !is.na(donor_followers)) %>% 
+  #share of possible donors who encountered the post, encounters per donor
+  mutate(donors_share = donors_count / donor_followers,
+         encounters_per_donor = encounters_count / donors_count)
+
+rm(tmp_image_raciness, tmp_post_encounters)
+
+```
+
+To support our main hypothesis, posts that are more racy would need to reach a higher share of their potential audience and/or be shown to data donors more often than non-racy posts.
+
+**Summarize by raciness rating:**
+- Which share of their possible audience did posts reach?
+- How often were they shown to the donors who did see them, on average? 
+
+```{r}
+post_racy_likelihood = post_encounters_share %>% 
+  group_by(sex,racy) %>% 
+  summarise(share_audience = sum(donors_count)/sum(donor_followers),
+            encounters_per_donor = sum(encounters_count)/sum(donors_count))
+post_racy_likelihood %>% knitr::kable(digits = 2)
+```
+
+**Findings:**
+
+> There is no clear pattern in which share of possible donors encountered a racy/non-racy post.
+> 
+> In posts by male users, racy images seem to reach a slightly higher share of their possible audience than non-racy ones.
+> 
+> It seems like posts by male users generally reach a larger share of their possible audience.
+> 
+> It does seem like posts that are very likely racy are shown much more often to the donors that did see them. This might have something to do with specific user preferences.
+
+```{r}
+rm(post_encounters_share, post_racy_likelihood)
+```
+
+# Question 6: Few followed accounts
+
+`Check if data donors who are following less than 5 accounts in total have a similar pattern.`
+
+This would be key to be able to claim that IG makes assumptions about what people might like without knowing anything about them.
+
+Count how many accounts each donor follows (encountered during feed runs, so this is a mimum estimate)
+
+```{r}
+donors_following = dbReadTable(con, "data_donors_donorfollowing") %>%
+  group_by(donor_id) %>%
+  summarise(n_following = length(unique(following_ig_username))) %>% 
+  arrange(n_following)
+donors_following %>% filter(n_following < 20) %>% knitr::kable(digits = 0)
+```
+
+None of the donors follow less than 5 accounts. Re-run Q2 analysis with 4 donors that follow less than *20* accounts. These all follow distinct monitored users.
+
+**Step 1:** Filter post dataset for only those shown to one of the donors with few followed accounts
+```{r echo=FALSE}
+tmp_donors_20 = donors_follow %>% filter(donor_id %in% (donors_following %>% filter(n_following < 20) %>% `$`(donor_id))) %>% select(-id)
+tmp_ig_post_20 = ig_post %>% left_join(tmp_donors_20, by = c("ig_user_id" = "iguser_id")) %>% 
+  filter(!is.na(donor_id))
+```
+
+**Step 2:** Calculate whether and how often each post was encountered by donors
+
+```{r echo=FALSE}
+#for each image: highest level of raciness in images
+tmp_image_raciness = ig_image %>% group_by(ig_post_id) %>% summarise(racy = min(racy))
+#for each post: how often did the donor see the post?
+tmp_post_encounters = donors_encounter %>%
+  left_join(donors_donation %>% select(id, donor_id), by = c("data_donation_id"="id")) %>% 
+  filter(donor_id %in% (donors_following %>% filter(n_following < 20) %>% `$`(donor_id))) %>% 
+  group_by(ig_post_id) %>% 
+  summarise(encounters_count = length(unique(data_donation_id)))
+
+tmp_post_encounters_20 = tmp_ig_post_20 %>%
+  select(id, sex, donor_id) %>% 
+  #join raciness level and donor encounters
+  left_join(tmp_image_raciness, by = c("id" = "ig_post_id")) %>% 
+  left_join(tmp_post_encounters, by = c("id" = "ig_post_id")) %>% 
+  #replace NA value in counts with 0
+  mutate(donor_encounter = ifelse(is.na(encounters_count), FALSE, TRUE),
+    encounters_count = ifelse(is.na(encounters_count), 0, encounters_count)) %>% 
+  # filter out videos, which have no analysis result, and posts with no following donors
+  filter(!is.na(racy))
+
+rm(tmp_image_raciness, tmp_post_encounters)
+
+```
+
+**Summarize by raciness rating:**
+- Which share of their possible audience did posts reach?
+- How often were they shown to the donors who did see them, on average? 
+
+```{r}
+post_racy_likelihood_20 = tmp_post_encounters_20 %>% 
+  group_by(sex, racy) %>% 
+  summarise(share_audience = mean(donor_encounter)) %>% 
+  spread(sex, share_audience)
+post_racy_likelihood_20 %>% knitr::kable(digits = 2)
+
+x = tmp_post_encounters_20 %>% group_by(sex) %>% 
+  summarise(nposts = length(unique(id))) %>% mutate(text = paste(nposts, "posts by", ifelse(sex =="F","women", "men")))
+cat("Basis:",paste(x$text, collapse = " and "))
+rm(x)
+```
+
+**Findings:**
+
+> Accounts with few followed users show more of a pattern.
+> 
+> For men, racy posts reach a higher share of their potential audience than non-racy ones. For women, the effect is reversed.
+> 
+> The sample size is relatively small here, since we only observe 4 donor accounts.
+
+In Q4, we will focus on specific labels tagged in images instead of their raciness rating.
+
+
+```{r include=FALSE}
+rm(post_racy_likelihood_20,donors_following,
+   tmp_donors_20,tmp_ig_post_20,tmp_post_encounters_20)
+```
+
+
+# Question 7: Nudity audience
+
+`Check if specific labels have a higher-than-average chance of being in the feed of donors`
+
+(e.g. "Bikini", "Undergarment", "Leg", "Beauty")
+
+1. Which share of their possible audience do image posts reach on average?
+
+2. For each label tagged more than 50 times: Which share of their possible audience did posts with that label reach?
+
+3. Group labels tagged more than 50 times into categories manually, and tag whether label indicates nudity.
+
+
+Calculation:
+
+```
+sum([Number of donors that saw posts])/sum([Number of donors that follow posts' creators])
+```
+
+
+**Step 0:** Preparation: Add data on encounters with each post to post dataset.
+
+```{r}
+#sum of unique encounters per post(i.e. not counting multiple encounters with the same post)
+tmp_donor_viewers = donors_encounter %>%
+  left_join(donors_donation, by = c("data_donation_id" = "id")) %>% 
+  group_by(ig_post_id) %>% summarise(donor_viewers = length(unique(donor_id)))
+#merge with post data
+ig_post_encounters = ig_post %>% 
+  left_join(tmp_donor_viewers, by = c("id" = "ig_post_id")) %>% 
+  #filter video posts, and posts from users with no donor followers
+  filter(!is.na(donor_followers),ig_type != "GraphVideo") %>% 
+  mutate(donor_viewers = ifelse(is.na(donor_viewers),0,donor_viewers)) %>% 
+  mutate(share = donor_viewers/donor_followers)
+rm(tmp_donor_viewers)
+```
+
+**Step 1:** Which share of their possible audience do image posts reach on average?
+
+```{r}
+encounters_share_average_sex = ig_post_encounters %>% group_by(sex) %>%
+  summarise(donor_viewers = sum(donor_viewers),
+            donor_followers = sum(donor_followers),
+            share = donor_viewers/donor_followers)
+
+encounters_share_average = sum(ig_post_encounters$donor_viewers)/sum(ig_post_encounters$donor_followers)
+```
+Posts are, on average, encountered by `r round(encounters_share_average*100,2)` % of their possible audience.
+
+For female users, the share is `r round(encounters_share_average_sex$share[1]*100,2)` %. For male users, the share is `r round(encounters_share_average_sex$share[2]*100,2)` %.
+    
+**Step 2:** For each label tagged in more than 50 images: Which share of their possible audience did posts with that label reach?
+
+For analysis by sex, exclude labels with less than 20 possible encounters (relevant for labels which are only common in posts by women).
+
+```{r}
+#function to find encounter data for label
+find_audience_share = function(label, by.sex = FALSE){
+  #list of post IDs in which the label was tagged
+  x = ig_image_labels %>% filter(description %in% label) %>%
+    `$`(ig_post_id) %>% unique %>% sort
+  #subset of post encounter dataset containing label
+  y = ig_post_encounters %>% filter(id %in% x)
+  
+  #return encounter data
+  if(by.sex){
+    y %>% group_by(sex) %>% 
+    summarise(
+      encounters_possible = sum(donor_followers),
+      encounters_actual = sum(donor_viewers),
+      encounters_share = sum(donor_viewers)/sum(donor_followers))
+  } else {
+    data.frame(encounters_possible = sum(y$donor_followers),
+      encounters_actual = sum(y$donor_viewers),
+      encounters_share = sum(y$donor_viewers)/sum(y$donor_followers))
+  }
+}
+```
+
+```{r}
+#run function for each label, save results in dataset columns,compare with average
+
+#by sex
+label_analysis_sex = lapply(label_analysis$description, find_audience_share, by.sex=TRUE) %>%
+  setNames(label_analysis$description) %>% 
+  bind_rows(.id = "description") %>%
+  #compare with average share by sex
+  left_join(encounters_share_average_sex %>% select(1,4),by="sex") %>% 
+  #for labels with less than 20 possible encounters: make share NA
+  mutate(encounters_share = ifelse(encounters_possible < 20, NA, encounters_share),
+         times_average = encounters_share / share) %>% 
+  arrange(-times_average) %>% select(-share) %>% 
+  #join label categories
+  left_join(label_analysis, by = "description")
+
+#total
+label_analysis = lapply(label_analysis$description, find_audience_share, by.sex=F) %>%
+  setNames(label_analysis$description) %>% 
+  bind_rows(.id = "description") %>% 
+  mutate(times_average = encounters_share / encounters_share_average) %>% 
+  arrange(-times_average) %>% 
+  #join label categories
+  left_join(label_analysis, by = "description")
+
+x = label_analysis_sex %>% filter(sex == "F") %>% head(10) %>% 
+  mutate(text = paste0(description, "\t(", round(times_average,1)," times average)"))
+cat("Labels with the highest audience share for women:\n\t",paste(x$text, collapse = "\n\t"),"\n\n")
+x = label_analysis_sex %>% filter(sex == "M") %>% head(10) %>% 
+  mutate(text = paste0(description, "\t(", round(times_average,1)," times average)"))
+cat("Labels with the highest audience share for men:\n\t",paste(x$text, collapse = "\n\t"))
+rm(x)
+```
+
+
+
+## Analysis 1: Body parts
+
+`Is the share of possible encounters higher than average for *images with body parts*?`
+
+Added manual category labels to dataset. Categories:
+
+```
+"body"       human body parts below the neck
+"clothes"    items of clothing except for sportswear or underwear
+"exercise"   labels describing exercise activies (e.g. yoga, physical fitness)
+"head"       human body parts above the neck
+"human"      other human-related labels (e.g. standing, model)
+"sportswear" sportswear
+"underwear"  underwear (including swimwear)
+"other"      none of the above
+```
+
+How does the share of possible encounters in images with body parts compare to the average? 
+```{r}
+#encounter share for posts with "body" category labels
+encounters_share_body = label_analysis %>%
+  filter(category == "body") %>% `$`(description) %>% 
+  find_audience_share() %>% `$`(encounters_share) %>% sum
+```
+
+Image posts containing body parts (`category == 'body'`) are encountered by `r round(encounters_share_body*100,2)` % of their possible audience.
+
+This is `r round((encounters_share_body-encounters_share_average)*100,2)` % higher than average.
+    
+The effect is more pronounced in posts by men.
+
+```{r}
+#encounter share for posts with "body" category labels, by sex
+label_analysis %>% filter(category == "body") %>% `$`(description) %>% 
+  find_audience_share(by.sex = T) %>% 
+  #compare with average share by sex
+  left_join(encounters_share_average_sex %>% select(1,4),by="sex") %>% 
+  mutate(times_average = encounters_share / share) %>% 
+  select(sex, encounters_share, times_average) %>%
+  knitr::kable(digits = 2)
+```
+
+
+Plot the results. Every bubble is a label. The larger the bubble, the more images contain the label. The position on the x axis indicates the share of possible encounters.
+
+```{r echo=FALSE}
+plot_colors = c("red","yellow","yellow","yellow","orange","grey50","orange","orange")
+ggplot(label_analysis_sex,
+       aes(x = encounters_share, y = sex, color = category, size = encounters_possible)) +
+  #add bubbles
+  geom_quasirandom(groupOnX = F, bandwidth = 0.05) +
+  #add annotated line for body category
+  geom_vline(xintercept = encounters_share_body, color ="grey70") +
+  annotate(geom="text",x = encounters_share_body+.002, y = 1.6,vjust=1,hjust=0, color="grey70",
+           label = paste("Average for image posts\ncontaining body parts:",
+                         round(encounters_share_body*100,2),"%")) +
+  #add annotated line for average
+  geom_vline(xintercept = encounters_share_average) +
+  annotate(geom="text",x = encounters_share_average+.002, y = 2.6,vjust=1,hjust=0,
+           label = paste("Average across\nall image posts:",
+                         round(encounters_share_average*100,2),"%")) +
+  #theme settings
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_color_manual(values = plot_colors) +
+  ggtitle("Share of possible encounters by category and sex") +
+  theme_minimal() + labs(x="share of possible encounters",y="") +
+  theme(panel.grid.major.y = element_blank(),panel.grid.minor.y = element_blank())
+rm(plot_colors)
+```
+
+**Findings:**
+
+> The share of possible encounters is slightly higher than average for images containing body parts.
+
+## Analysis 2: Nudity
+
+`Is the share of possible encounters higher than average for images with *labels indicating nudity*?`
+
+Added column `nudity`, indicating labels which point to nudity in the picture. Labels included:
+
+```
+Abdomen, Barechested, Bikini, Brassiere, Chest, Lingerie, Muscle, Skin, Stomach, Swimwear, Thigh, Trunk, Undergarment, Waist
+```
+How does the share of possible encounters in images with nudity compare to the average? 
+
+```{r}
+#encounter share for posts with "body" category labels
+encounters_share_nudity = label_analysis %>%
+  filter(nudity) %>% `$`(description) %>% 
+  find_audience_share() %>% `$`(encounters_share)
+```
+
+Image posts containing body parts (`nudity == TRUE`) are encountered by `r round(encounters_share_nudity*100,2)` % of their possible audience.
+
+This is `r round((encounters_share_nudity-encounters_share_average)*100,2)` % higher than average.
+
+The effect is more pronounced in posts by men.
+
+```{r}
+#encounter share for posts with "body" category labels, by sex
+label_analysis %>% filter(nudity) %>% `$`(description) %>% 
+  find_audience_share(by.sex = T) %>% 
+  #compare with average share by sex
+  left_join(encounters_share_average_sex %>% select(1,4),by="sex") %>% 
+  mutate(times_average = encounters_share / share) %>% 
+  select(sex, encounters_share, times_average) %>%
+  knitr::kable(digits = 2)
+```
+
+Plot the results.
+
+```{r echo=FALSE}
+ggplot(label_analysis_sex %>% mutate(nudity = factor(nudity, levels = c(TRUE,FALSE))),
+       aes(x = encounters_share, y = sex, color = nudity, size = encounters_possible)) +
+  #add bubbles
+  geom_quasirandom(groupOnX = F, bandwidth = 0.05) +
+  #add annotated line for nudity labels
+  geom_vline(xintercept = encounters_share_nudity, color ="grey70") +
+  annotate(geom="text",x = encounters_share_nudity+.002, y = 1.6,vjust=1,hjust=0, color="grey70",
+           label = paste("Average for image posts with labels\nindicating nudity:",
+                         round(encounters_share_nudity*100,2),"%")) +
+  #add annotated line for average
+  geom_vline(xintercept = encounters_share_average) +
+  annotate(geom="text",x = encounters_share_average+.002, y = 2.6,vjust=1,hjust=0,
+           label = paste("Average across\nall image posts:",
+                         round(encounters_share_average*100,2),"%")) +
+  #theme settings
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal() + labs(x="share of possible encounters",y="") +
+  theme(panel.grid.major.y = element_blank(),panel.grid.minor.y = element_blank())
+```
+
+**Findings:**
+
+> The share of possible encounters is slightly higher than average for images containing nudity.
+
+
+## Analysis 3: Human without nudity
+
+`Is the share of possible encounters higher than average for images with humans, but without nudity?`
+
+Images with body parts or nudity might be ranked higher simply because they contain humans as opposed to objects. To test that, filter for posts with labels from the "human","head" or "body" categories (see Analysis 1), but no nudity labels (see Analysis 2).
+
+
+```{r}
+#encounter share for posts with "body" category labels
+encounters_share_human = label_analysis %>%
+  filter(!nudity, category %in% c("human","head","body")) %>% `$`(description) %>% 
+  find_audience_share() %>% `$`(encounters_share)
+```
+
+Image posts containing humans, but no nudity, are encountered by `r round(encounters_share_human*100,2)` % of their possible audience.
+
+This is `r round((encounters_share_human-encounters_share_average)*100,2)` % higher than average.
+
+
+The effect is slightly more pronounced in posts by men, but negligible in both sexes.
+
+```{r}
+#encounter share for posts with "body" category labels, by sex
+label_analysis %>% filter(!nudity, category %in% c("human","head","body")) %>% `$`(description) %>% 
+  find_audience_share(by.sex = T) %>% 
+  #compare with average share by sex
+  left_join(encounters_share_average_sex %>% select(1,4),by="sex") %>% 
+  mutate(times_average = encounters_share / share) %>% 
+  select(sex, encounters_share, times_average) %>%
+  knitr::kable(digits = 2)
+```
+
+**Findings:**
+
+> The share of possible encounters is average for images containing humans, but no nudity.
+
+
+
+## Analysis 4: Significance test
+
+`Are the differences found in Q4 Analyses 2 and 3 statistically significant?`
+
+Does the *presence of labels indicating nudity* influence the *chance of a post being encountered*? Run Fisher's exact test for alpha = 0.05.
+
+Test contingency matrix containing:
+```
+  no of posts with (nudity == TRUE) & (donor_viewers > 0)
+  no of posts with (nudity == TRUE) & (donor_viewers == 0)
+  no of posts with (nudity == FALSE) & (donor_viewers > 0)
+  no of posts with (nudity == FALSE) & (donor_viewers == 0)
+```
+
+```{r}
+tmp_nudity_table = ig_image_labels %>%
+  #add columns for nudity indicator
+  mutate(nudity = description %in% label_analysis$description[label_analysis$nudity]) %>%
+  #sum by post ID: does the post contain at least one label with nudity == TRUE?
+  group_by(ig_post_id) %>% summarise(nudity = any(nudity)) %>% 
+  #join donor viewers
+  left_join(ig_post_encounters %>% select(id,donor_followers,donor_viewers),by=c("ig_post_id"="id")) %>% 
+  #exclude posts without donor followers
+  filter(!is.na(donor_followers)) %>% 
+  #add column indicating whether post was encountered by at least 1 donor
+  mutate(donor_viewers = donor_viewers > 0) %>% 
+  #count posts in each category
+  group_by(nudity,donor_viewers) %>% summarise(n = length(unique(ig_post_id))) %>% 
+  arrange(-nudity,-donor_viewers)
+
+#run fisher test:
+matrix(tmp_nudity_table$n, nrow = 2) %>% fisher.test()
+
+```
+
+H0 is rejected for alpha = 0.05. The true odds ratio is not equal to 1. Estimate: 1.268282.
+
+
+Run the hypothesis test for women and men separately.
+
+```{r}
+tmp_nudity_table_sex = ig_image_labels %>%
+  #add columns for nudity indicator
+  mutate(nudity = description %in% label_analysis$description[label_analysis$nudity]) %>%
+  #sum by post ID: does the post contain at least one label with nudity == TRUE?
+  group_by(sex, ig_post_id) %>% summarise(nudity = any(nudity)) %>% 
+  #join donor viewers
+  left_join(ig_post_encounters %>% select(id,donor_followers,donor_viewers),by=c("ig_post_id"="id")) %>% 
+  #exclude posts without donor followers
+  filter(!is.na(donor_followers)) %>% 
+  #add column indicating whether post was encountered by at least 1 donor
+  mutate(donor_viewers = donor_viewers > 0) %>% 
+  #count posts in each category
+  group_by(sex, nudity,donor_viewers) %>% summarise(n = length(unique(ig_post_id))) %>% 
+  arrange(sex,-nudity,-donor_viewers)
+
+#run fisher test by sex:
+fw = tmp_nudity_table_sex %>% filter(sex == "F") %>% `$`(n) %>% matrix(., nrow = 2) %>% fisher.test()
+fm = tmp_nudity_table_sex %>% filter(sex == "M") %>% `$`(n) %>% matrix(., nrow = 2) %>% fisher.test()
+```
+
+For posts by women, the p-value is `r fw$p.value` >= 0.05: The true odds ratio is equal to 1.
+
+For posts by men, the p-value is `r fm$p.value` < 0.05: The true odds ratio is not equal to 1. Estimate: `r fm$estimate`
+
+**Finding:**
+
+> Images that contain nudity have a *significantly higher chance* of being encountered by data donors. The chance of encountering an image with nudity is *around 1.3 times as high* as the chance of encountering an image without nudity.
+> 
+> For posts by women alone, the difference is *not* statistically significant. For men, it is.
+> The chance of encountering an image with nudity posted by a male user is *around 2.3 times as high* as the chance of encountering an image without nudity posted by a male user.
+
+Compare that to images with labels indicating humans, but no nudity (see Analysis 3).
+
+```{r echo=FALSE}
+x = label_analysis %>% filter(!nudity, category %in% c("human","head","body")) %>% `$`(description)
+
+tmp_human_table = ig_image_labels %>%
+  #add columns for human indicator
+  mutate(human = description %in% x) %>%
+  #sum by post ID: does the post contain at least one label with nudity == TRUE?
+  group_by(ig_post_id) %>% summarise(human = any(human)) %>% 
+  #join donor viewers
+  left_join(ig_post_encounters %>% select(id,donor_followers,donor_viewers),by=c("ig_post_id"="id")) %>% 
+  #exclude posts without donor followers
+  filter(!is.na(donor_followers)) %>% 
+  #add column indicating whether post was encountered by at least 1 donor
+  mutate(donor_viewers = donor_viewers > 0) %>% 
+  #count posts in each category
+  group_by(human,donor_viewers) %>% summarise(n = length(unique(ig_post_id))) %>% 
+  arrange(-human,-donor_viewers)
+
+#run fisher test:
+matrix(tmp_human_table$n, nrow = 2) %>% fisher.test()
+```
+
+The p-value is >= 0.05: H0 is not rejected for alpha = 0.05. The true odds ratio is equal to 1.
+
+**Finding:**
+
+> Images that contain humans, but no nudity *do not* have a significantly higher chance of being encountered by data donors. We do not analyze this by sex, since Q4 A3 showed the difference between posts by men and women is negligible.
+
+```{r}
+rm(x,tmp_human_table,tmp_nudity_table,tmp_nudity_table_sex,fm,fw,
+   encounters_share_average_sex, encounters_share_average,
+   encounters_share_body,encounters_share_human,encounters_share_nudity)
+```
+
+
+**Q7 findings:**
+
+> Images that contain nudity have a significantly higher chance of being encountered by data donors than images that don't.
+>
+> This effect is **only statistically significant for posts by male users**, posts by female users do not pass the test.
+> 
+> This effect is not observed in images that contain humans, but do not contain nudity.
+

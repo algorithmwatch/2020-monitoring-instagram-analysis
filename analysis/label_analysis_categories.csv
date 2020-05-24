@@ -1,0 +1,127 @@
+description;category;nudity;n_images
+Abdomen;body;TRUE;385
+Active pants;sportswear;FALSE;89
+Architecture;other;FALSE;112
+Arm;body;FALSE;695
+Art;other;FALSE;52
+Barechested;body;TRUE;152
+Beach;other;FALSE;83
+Beauty;human;FALSE;582
+Bikini;underwear;TRUE;130
+Black;other;FALSE;55
+Black hair;head;FALSE;121
+Black-and-white;other;FALSE;51
+Blond;human;FALSE;161
+Blue;other;FALSE;99
+Bodybuilding;human;TRUE;52
+Brassiere;underwear;TRUE;76
+Brown hair;head;FALSE;58
+Building;other;FALSE;78
+Canidae;other;FALSE;66
+Cheek;head;FALSE;57
+Chest;body;TRUE;178
+Child;human;FALSE;72
+Chin;head;FALSE;124
+Clothing;clothes;FALSE;674
+Cool;other;FALSE;92
+Cuisine;other;FALSE;121
+Dish;other;FALSE;117
+Dog;other;FALSE;56
+Dress;clothes;FALSE;152
+Event;other;FALSE;65
+Exercise;exercise;FALSE;131
+Exercise equipment;exercise;FALSE;77
+Eyebrow;head;FALSE;140
+Eyewear;clothes;FALSE;57
+Face;head;FALSE;185
+Fashion;clothes;FALSE;329
+Finger;body;FALSE;52
+Fitness professional;human;FALSE;51
+Floor;other;FALSE;107
+Flooring;other;FALSE;68
+Flower;other;FALSE;52
+Font;other;FALSE;362
+Food;other;FALSE;153
+Footwear;clothes;FALSE;183
+Forehead;head;FALSE;112
+Fun;other;FALSE;243
+Furniture;other;FALSE;141
+Grass;other;FALSE;87
+Hair;head;FALSE;257
+Hairstyle;head;FALSE;163
+Hand;body;FALSE;65
+Happy;human;FALSE;57
+Head;head;FALSE;75
+House;other;FALSE;58
+Human body;body;FALSE;140
+Human leg;body;FALSE;358
+Ingredient;other;FALSE;84
+Interior design;other;FALSE;88
+Jacket;clothes;FALSE;51
+Jeans;clothes;FALSE;113
+Joint;body;FALSE;584
+Knee;body;FALSE;231
+Lady;human;FALSE;83
+Leg;body;FALSE;1091
+Leggings;clothes;FALSE;53
+Leisure;other;FALSE;169
+Line;other;FALSE;192
+Lingerie;underwear;TRUE;127
+Lip;head;FALSE;177
+Long hair;head;FALSE;239
+Magenta;other;FALSE;112
+Meal;other;FALSE;51
+Model;human;FALSE;186
+Muscle;body;TRUE;488
+Neck;head;FALSE;132
+Nose;head;FALSE;113
+Ocean;other;FALSE;65
+Outerwear;clothes;FALSE;126
+Photo shoot;other;FALSE;170
+Photograph;other;FALSE;115
+Photography;other;FALSE;404
+Physical fitness;exercise;FALSE;529
+Pink;other;FALSE;248
+Plant;other;FALSE;138
+Produce;other;FALSE;60
+Product;other;FALSE;56
+Purple;other;FALSE;76
+Recreation;other;FALSE;104
+Red;other;FALSE;70
+Room;other;FALSE;312
+Sea;other;FALSE;147
+Selfie;other;FALSE;124
+Shoe;clothes;FALSE;61
+Shoulder;body;FALSE;807
+Sitting;human;FALSE;259
+Skin;body;TRUE;192
+Sky;other;FALSE;183
+Smile;human;FALSE;119
+Snapshot;other;FALSE;83
+Sports;exercise;FALSE;54
+Sportswear;sportswear;FALSE;308
+Standing;human;FALSE;233
+Stomach;body;TRUE;111
+Street fashion;clothes;FALSE;99
+Strength training;exercise;FALSE;90
+Stretching;exercise;FALSE;113
+Summer;other;FALSE;202
+Swimwear;underwear;TRUE;100
+T-shirt;clothes;FALSE;63
+Table;other;FALSE;51
+Text;other;FALSE;353
+Textile;clothes;FALSE;61
+Thigh;body;TRUE;570
+Tights;sportswear;FALSE;68
+Tourism;other;FALSE;89
+Tree;other;FALSE;173
+Trunk;body;TRUE;84
+Undergarment;underwear;TRUE;267
+Vacation;other;FALSE;323
+Vehicle;other;FALSE;77
+Violet;other;FALSE;63
+Waist;body;TRUE;229
+Water;other;FALSE;139
+White;other;FALSE;145
+Yellow;other;FALSE;101
+Yoga;exercise;FALSE;59
